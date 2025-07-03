@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+
+DATABASE_DIR="$HOME/.local/share/bookmarks"
+DATABASE_FILE=bookmark.db
+DATABASE_PATH="$DATABASE_DIR/$DATABASE_FILE"
+
+RED="$(tput setaf 196)"
+GREEN="$(tput setaf 82)"
+BLUE="$(tput setaf 87)"
+WHITE="$(tput setaf 7)"
+
+function help() {
+  cat <<EOF
+$(_text "$BLUE" "bmark | A simple bookmark manager")
+
+$(_text "$BLUE" "Usage:")
+  bmark FLAG <FLAG_INPUT> COMMAND INPUT
+  bmark -h | bmark help
+
+$(_text "$BLUE" "Commands:")
+  delete ID or URL                        Delete a bookmark
+  edit FIELD=VALUE URL TAG TITLE NOTES    Edit a bookmark
+  help                                    Displays this message and exits
+  insert URL TAG TITLE NOTES              Insert a new bookmark
+  list URL TAG TITLE NOTES                List all bookmarks
+
+$(_text "$BLUE" "Flags:")
+  -h                            Displays this message and exits
+  --help                        Displays this message and exits
+  --note <NOTE>                 Query for NOTE
+  -r                            List queries will output only the URL
+  --tag <TAG>                   Query for TAG
+  --title <TITLE>               Query for TITLE
+  --url <URL>                   Query for URL
+
+$(_text "$BLUE" "Examples:")
+  bmark insert URL TAG TITLE NOTES
+  bmark --tag "TAG" --note "NOTE" list URL TITLE
+
+$(_text "$BLUE" "SQLite Schema:")
+  CREATE TABLE bookmarks (
+    id INTEGER PRIMARY KEY NOT NULL,
+    url TEXT NOT NULL UNIQUE,
+    tag TEXT,
+    title TEXT,
+    note TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+EOF
+}
+
+function _check_command() {
+  for cmd in "$@"; do
+    if ! command -v "$cmd" &>/dev/null; then
+      _text "$RED" "Error: $cmd could not be found. Please install it." >&2
+      exit 1
+    fi
+  done
+}
+
+function _text() {
+  local color text reset
+  color=$1
+  text=$2
+  reset=$(tput sgr0)
+  echo -e "${color}${text}${reset}"
+}
+
+function _setup() {
+  _text "$WHITE" "Bookmark database not found. Creating a new one..."
+  mkdir -p "$DATABASE_DIR"
+  touch "$DATABASE_PATH"
+  sqlite3 "$DATABASE_PATH" "CREATE TABLE bookmarks (
+      id INTEGER PRIMARY KEY NOT NULL,
+      url TEXT NOT NULL UNIQUE,
+      tag TEXT,
+      title TEXT,
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );"
+  _text "$WHITE" "A new database has been created at $DATABASE_DIR"
+}
+
+function _delete() {
+  local id ROW_EXISTS
+  id=$1
+
+  if [[ "$IS_ID" -eq 1 ]]; then
+    ROW_EXISTS=$(sqlite3 "$DATABASE_PATH" "SELECT COUNT(*) FROM bookmarks WHERE id = $id;")
+
+    if [[ "$ROW_EXISTS" -gt 0 ]]; then
+      sqlite3 "$DATABASE_PATH" "DELETE FROM bookmarks WHERE id = $id;"
+      _text "$GREEN" "ID $id has been removed."
+    else
+      _text "$RED" "Error: ID $id does not exist."
+    fi
+  else
+    ROW_EXISTS=$(sqlite3 "$DATABASE_PATH" "SELECT url FROM bookmarks WHERE url = $id;")
+    if [[ "$ROW_EXISTS" -gt 0 ]]; then
+      sqlite3 "$DATABASE_PATH" "DELETE FROM bookmarks WHERE url = '$id';"
+      _text "$GREEN" "URL $id has been removed."
+    else
+      _text "$RED" "Error: URL $id does not exist."
+    fi
+  fi
+  exit 0
+}
+
+function _insert() {
+  if sqlite3 "$DATABASE_PATH" "SELECT url FROM bookmarks WHERE url = '$URL';" | grep "$URL" &>/dev/null; then
+    _text "$RED" "Error: URL is already bookmarked!"
+    exit 1
+  fi
+  sqlite3 "$DATABASE_PATH" "INSERT INTO bookmarks (url, tag, title, notes) VALUES('$URL','$TAG','$TITLE','$NOTE');" &&
+    _text "$GREEN" "URL succesfully added!"
+  exit 0
+}
+
+function _list() {
+  local conditions=()
+
+  if [[ "$IS_TAG" -eq 1 ]]; then
+    conditions+=("(tag LIKE '%$TAG%')")
+  fi
+  if [[ "$IS_NOTE" -eq 1 ]]; then
+    conditions+=("(notes LIKE '%$NOTE%')")
+  fi
+  if [[ "$IS_TITLE" -eq 1 ]]; then
+    conditions+=("(title LIKE '%$TITLE%')")
+  fi
+  if [[ "$IS_URL" -eq 1 ]]; then
+    conditions+=("(url LIKE '%$URL%')")
+  fi
+
+  if [[ ${#conditions[@]} -eq 0 ]]; then
+    sqlite3 "$DATABASE_PATH" "SELECT * FROM bookmarks;" || {
+      _text "$RED" "Error: An unknown error occurred!"
+      exit 1
+    }
+  else
+    local query="SELECT * FROM bookmarks WHERE ${conditions[0]}"
+    for ((i = 1; i < ${#conditions[@]}; i++)); do
+      query+=" AND ${conditions[i]}"
+    done
+    query+=";"
+    if [[ "$RAW" -eq 1 ]]; then
+      sqlite3 "$DATABASE_PATH" "$query;" | awk -F '|' '{print $2}'
+    else
+      sqlite3 "$DATABASE_PATH" "$query" || {
+        _text "$RED" "Error: An unknown error occurred!"
+        exit 1
+      }
+    fi
+  fi
+  exit 0
+}
+
+function _edit() {
+  local conditions=()
+  local id=$1
+  local id_field
+  local query="UPDATE bookmarks SET"
+
+  id_field=$(awk -F '=' '{print $1}' <<<"$id")
+  id=$(awk -F '=' '{print $2}' <<<"$id")
+
+  [[ -n "$URL" ]] && conditions+=(" url = '$URL'")
+  [[ -n "$TAG" ]] && conditions+=(" tag = '$TAG'")
+  [[ -n "$TITLE" ]] && conditions+=(" title = '$TITLE'")
+  [[ -n "$NOTES" ]] && conditions+=(" notes = '$NOTES'")
+
+  if [[ ${#conditions[@]} -eq 0 ]]; then
+    _text "$WHITE" "No fields to update."
+    exit 1
+  fi
+
+  query+=" $(
+    IFS=,
+    echo "${conditions[*]}"
+  )"
+  query+=" WHERE $id_field = $id;"
+
+  sqlite3 "$DATABASE_PATH" "$query"
+  exit 0
+}
+
+function main() {
+  if [ ! -f "$DATABASE_PATH" ]; then
+    _setup
+    help
+    exit 0
+  fi
+  _list
+}
+
+function parser() {
+  local id html_file
+
+  while getopts ":h-r" opt; do
+    case "$opt" in
+    h)
+      help
+      exit 0
+      ;;
+    r)
+      RAW=1
+      ;;
+    -)
+      break
+      ;;
+    ?)
+      _text "$RED" "Error: Invalid option '-$OPTARG'" >&2
+      exit 1
+      ;;
+    esac
+  done
+
+  shift $((OPTIND - 1))
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    delete)
+      shift
+      id=$1
+      if [[ $id =~ ^[0-9]+$ ]]; then
+        IS_ID=1
+      fi
+      _delete "$id"
+      ;;
+    edit)
+      shift
+      id=$1
+      [[ -z "$id" ]] && {
+        _text "$RED" "Error: Provide an ID\n"
+        _text "$BLUE" "Tip: "
+        _text "$WHITE" "bmark edit FIELD=VALUE\n"
+        _text "$BLUE" "Field Values: "
+        _text "$WHITE" "url, tag, title and notes\n"
+        _text "$BLUE" "Example: "
+        _text "$WHITE" "bmark --tag 'example' edit url='https://example.com'"
+        exit 1
+      }
+      shift
+      [[ -z "$URL" ]] && {
+        URL=$1
+        shift
+      }
+      [[ -z "$TAG" ]] && {
+        TAG=$1
+        shift
+      }
+      [[ -z "$TITLE" ]] && {
+        TITLE=$1
+        shift
+      }
+      [[ -z "$NOTE" ]] && {
+        NOTE=$1
+        shift
+      }
+      _edit "$id"
+      ;;
+    insert)
+      shift
+      [[ -z "$URL" ]] && {
+        URL=$1
+        [[ -z "$URL" ]] && {
+          _text "$RED" "Error: Provide an URL."
+          exit 1
+        }
+        shift
+      }
+      [[ -z "$TAG" ]] && {
+        TAG=$1
+        shift
+      }
+      [[ -z "$TITLE" ]] && {
+        TITLE=$1
+        shift
+      }
+      [[ -z "$NOTE" ]] && {
+        NOTE=$1
+        shift
+      }
+      _insert
+      ;;
+    list)
+      [[ -z "$URL" ]] && {
+        URL=$2
+        IS_URL=1
+        shift
+      }
+      [[ -z "$TAG" ]] && {
+        TAG=$1
+        IS_TAG=1
+        shift
+      }
+      [[ -z "$TITLE" ]] && {
+        TITLE=$1
+        IS_TITLE=1
+        shift
+      }
+      [[ -z "$NOTE" ]] && {
+        NOTE=$1
+        IS_NOTE=1
+        shift
+      }
+      _list
+      ;;
+    import)
+      shift
+      html_file=$1
+      _import "$html_file"
+      ;;
+    --help)
+      help
+      exit 0
+      ;;
+    --title)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        TITLE="$2"
+        IS_TITLE=1
+        shift 2
+      else
+        _text "$RED" "Error: Argument for --title is missing" >&2
+        exit 1
+      fi
+      ;;
+    --tag)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        TAG="$2"
+        IS_TAG=1
+        shift 2
+      else
+        _text "$RED" "Error: Argument for --tag is missing" >&2
+        exit 1
+      fi
+      ;;
+    --note)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        NOTE="$2"
+        IS_NOTE=1
+        shift 2
+      else
+        _text "$RED" "Error: Argument for --note is missing" >&2
+        exit 1
+      fi
+      ;;
+    --url)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        URL="$2"
+        IS_URL=1
+        shift 2
+      else
+        _text "$RED" "Error: Argument for --url is missing" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      main
+      ;;
+    esac
+  done
+  exit 0
+}
+
+_check_command sqlite3
+
+if [ -z "$1" ]; then
+  main
+fi
+
+parser "$@"
