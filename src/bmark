@@ -1,0 +1,497 @@
+#!/usr/bin/env bash
+
+DATABASE_DIR="$HOME/.local/share/bookmarks"
+DATABASE_FILE=bookmark.db
+DATABASE_PATH="$DATABASE_DIR/$DATABASE_FILE"
+
+RED="$(tput setaf 196)"
+GREEN="$(tput setaf 82)"
+BLUE="$(tput setaf 87)"
+
+function help() {
+  cat <<EOF
+$(_text "$BLUE" "bmark | A simple bookmark manager")
+
+$(_text "$BLUE" "Usage:")
+  bmark FLAG <FLAG_INPUT> COMMAND INPUT
+  bmark -h | bmark help
+
+$(_text "$BLUE" "Commands:")
+  delete ID or URL                        Delete a bookmark
+  edit FIELD=VALUE URL TAG TITLE NOTES    Edit a bookmark
+  help                                    Displays this message and exits
+  insert URL TAG TITLE NOTES              Insert a new bookmark
+  list URL TAG TITLE NOTES                List all bookmarks
+
+$(_text "$BLUE" "Flags:")
+  -h                            Displays this message and exits
+  --help                        Displays this message and exits
+  --note <NOTE>                 Query for NOTE
+  -r                            List queries will output only the URL
+  --tag <TAG>                   Query for TAG
+  --title <TITLE>               Query for TITLE
+  --url <URL>                   Query for URL
+
+$(_text "$BLUE" "Examples:")
+  bmark insert URL TAG TITLE NOTES
+  bmark --tag "TAG" --note "NOTE" list URL TITLE
+EOF
+}
+
+function _text() {
+  local color text reset
+  color=$1
+  text=$2
+  reset=$(tput sgr0)
+
+  echo -e "${color}${text}${reset}"
+}
+
+function _error() {
+  local message=$1
+
+  _text "$RED" "Error: $message"
+}
+
+function _check_command() {
+  local commands=("$@")
+
+  for cmd in "${commands[@]}"; do
+    if ! command -v "$cmd" &>/dev/null; then
+      _error "$cmd could not be found. Please install it." >&2
+      exit 1
+    fi
+  done
+}
+
+function _escape_string() {
+  local arg=$1
+
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+function _confirmation() {
+  local action=$1
+  local value=$2
+
+  if [[ "$FORCE" -eq 1 ]]; then
+    unset FORCE
+    return 0
+  else
+    echo -e "${BLUE}>> Are you sure you want to$(tput sgr0) ${RED}$action$(tput sgr0) ${BLUE}$value? (y/N)$(tput sgr0)"
+    local color text reset
+    read -r choice
+    if [ "$choice" == "Y" ] || [ "$choice" == "y" ]; then
+      unset choice
+      return 0
+    else
+      unset choice
+      return 1
+    fi
+  fi
+}
+
+function _setup() {
+  echo "Bookmark database not found. Creating a new one..."
+  mkdir -p "$DATABASE_DIR"
+  touch "$DATABASE_PATH"
+  sqlite3 "$DATABASE_PATH" "PRAGMA foreign_keys = ON;
+    CREATE TABLE bookmarks (
+      id INTEGER PRIMARY KEY NOT NULL,
+      url TEXT NOT NULL UNIQUE,
+      title TEXT,
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_url ON bookmarks (url);
+    CREATE TABLE tags (
+      id INTEGER PRIMARY KEY NOT NULL,
+      tag TEXT NOT NULL UNIQUE
+    );
+    CREATE INDEX idx_tag ON tags (tag);
+    CREATE TABLE bookmark_tags (
+      bookmark_id INTEGER,
+      tag_id INTEGER,
+      PRIMARY KEY (bookmark_id, tag_id),
+      FOREIGN KEY (bookmark_id) REFERENCES bookmarks(id) ON DELETE CASCADE,
+      FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+    );
+    CREATE INDEX idx_bookmark_id ON bookmark_tags (bookmark_id);
+    CREATE INDEX idx_tag_id ON bookmark_tags (tag_id);"
+  _text "$GREEN" "A new database has been created at $DATABASE_DIR"
+}
+
+function _delete() {
+  local id
+  id=$(_escape_string "$1")
+
+  if [[ "$IS_ID" -eq 1 ]]; then
+    unset IS_ID
+    if [[ $(sqlite3 "$DATABASE_PATH" "SELECT COUNT(*) FROM bookmarks WHERE id = $id;") -gt 0 ]]; then
+      _confirmation "DELETE" "ID = $id" && sqlite3 "$DATABASE_PATH" "PRAGMA foreign_keys = ON; DELETE FROM bookmarks WHERE id = $id;" && _text "$GREEN" "ID $id has been removed."
+    else
+      _error "ID $id does not exist."
+    fi
+  elif [[ "$IS_TAG" -eq 1 ]]; then
+    unset IS_TAG
+    if [[ $(sqlite3 "$DATABASE_PATH" "SELECT COUNT(*) FROM bookmarks WHERE tag = '$id';") -ne 0 ]]; then
+      _confirmation "DELETE" "TAG = $id" && sqlite3 "$DATABASE_PATH" "PRAGMA foreign_keys = ON; DELETE FROM tags WHERE tag = '$id';" && _text "$GREEN" "TAG $id has been removed."
+    else
+      _error "TAG $id does not exist."
+    fi
+  elif [[ "$IS_URL" -eq 1 ]]; then
+    unset IS_URL
+    if [[ $(sqlite3 "$DATABASE_PATH" "SELECT COUNT(*) FROM bookmarks WHERE url = '$id';") -ne 0 ]]; then
+      _confirmation "DELETE" "URL = $id" && sqlite3 "$DATABASE_PATH" "PRAGMA foreign_keys = ON; DELETE FROM bookmarks WHERE url = '$id';" && _text "$GREEN" "URL $id has been removed."
+    else
+      _error "URL $id does not exist."
+    fi
+  fi
+  exit 0
+}
+
+function _insert() {
+  local tag_array=()
+  local tag_id bookmark_id val current_date tags
+  current_date=$(date +%s)
+  tag_id=()
+
+  if [[ $(sqlite3 "$DATABASE_PATH" "SELECT * FROM bookmarks WHERE url = '$URL';") -ne 0 ]]; then
+    _error "URL is already bookmarked!"
+    exit 1
+  fi
+  if [ -n "$TAG" ]; then
+    IFS=','
+    read -r -a tag_array <<<"${TAG}"
+    for tags in "${tag_array[@]}"; do
+      tag_id+=("$(sqlite3 "$DATABASE_PATH" "INSERT OR IGNORE INTO tags (tag) VALUES('$tags'); SELECT last_insert_rowid();")")
+    done
+  else
+    tag_id=(0)
+  fi
+  bookmark_id=$(sqlite3 "$DATABASE_PATH" "INSERT OR IGNORE INTO bookmarks (url, title, note, created_at, updated_at) VALUES('$URL','$TITLE','$NOTE','$current_date','$current_date'); SELECT last_insert_rowid();")
+  [[ -z "$bookmark_id" ]] && {
+    _error "An unknown error occurred!"
+    exit 1
+  }
+  if [ -n "$TAG" ]; then
+    for tags in "${tag_id[@]}"; do
+      sqlite3 "$DATABASE_PATH" "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES('$bookmark_id','${tags}');"
+    done
+  else
+    sqlite3 "$DATABASE_PATH" "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES('$bookmark_id','${tag_id[0]}');"
+  fi
+  val=$?
+  [[ "$val" -eq 0 ]] && _text "$GREEN" "URL succesfully added!"
+  exit 0
+}
+
+function _list() {
+  local conditions=()
+  local fields="b.id, b.url, GROUP_CONCAT(t.tag, ',') AS tags, b.title, b.note"
+  if [[ "$RAW" -eq 1 ]]; then
+    fields="b.url"
+  fi
+
+  if [[ -n "$TAG" ]]; then
+    conditions+=("(tag LIKE '%$TAG%')")
+  fi
+  if [[ -n "$NOTE" ]]; then
+    conditions+=("(note LIKE '%$NOTE%')")
+  fi
+  if [[ -n "$TITLE" ]]; then
+    conditions+=("(title LIKE '%$TITLE%')")
+  fi
+  if [[ -n "$URL" ]]; then
+    conditions+=("(url LIKE '%$URL%')")
+  fi
+
+  if [[ ${#conditions[@]} -eq 0 ]]; then
+    if [[ $(sqlite3 "$DATABASE_PATH" "SELECT COUNT(*) FROM tags;") -ne 0 ]]; then
+      sqlite3 "$DATABASE_PATH" "SELECT DISTINCT $fields FROM bookmarks AS b JOIN bookmark_tags AS bt ON b.id = bt.bookmark_id JOIN tags AS t ON bt.tag_id = t.id;"
+    else
+      sqlite3 "$DATABASE_PATH" "SELECT bookmarks.id, url, title, note FROM bookmarks;"
+    fi
+  else
+    local query="SELECT DISTINCT $fields FROM bookmarks AS b JOIN bookmark_tags AS bt ON b.id = bt.bookmark_id JOIN tags AS t ON bt.tag_id = t.id WHERE ${conditions[0]}"
+    for ((i = 1; i < ${#conditions[@]}; i++)); do
+      query+=" AND ${conditions[i]}"
+    done
+    query+=";"
+    sqlite3 "$DATABASE_PATH" "$query"
+  fi
+  exit 0
+}
+
+function _edit_tags() {
+  local bookmark_conditions=()
+  local tags_conditions=()
+  local id=$1
+  local id_field=$2
+  local tag_query="UPDATE tags SET"
+
+  id_field=$(awk -F '=' '{print $1}' <<<"$id")
+  id=$(awk -F '=' '{print $2}' <<<"$id")
+
+  [[ -n "$TAG" ]] && tags_conditions+=(" tag = '$TAG'")
+  tag_query+="${tags_conditions[*]}"
+  tag_query+=" WHERE tag = '$id';"
+
+  if [[ ${#tags_conditions[@]} -eq 0 ]]; then
+    echo "No fields to update."
+    exit 1
+  fi
+  sqlite3 "$DATABASE_PATH" "$tag_query" && _text "$GREEN" "Renamed tag $id to $TAG"
+  exit 0
+}
+
+function _edit_bookmark() {
+  local bookmark_conditions=()
+  local bookmark_query="UPDATE bookmarks SET"
+  local id=$1
+  local id_field=$2
+  local tag_array=()
+
+  id_field=$(awk -F '=' '{print $1}' <<<"$id")
+  id=$(awk -F '=' '{print $2}' <<<"$id")
+
+  [[ -n "$URL" ]] && bookmark_conditions+=(" url = '$URL'")
+  [[ -n "$TITLE" ]] && bookmark_conditions+=(" title = '$TITLE'")
+  [[ -n "$NOTES" ]] && bookmark_conditions+=(" note = '$NOTES'")
+
+  bookmark_id=$(sqlite3 "$DATABASE_PATH" "SELECT id FROM bookmarks WHERE $id_field = '$id';")
+  [[ -z "$bookmark_id" ]] && {
+    _error "An unknown error occurred!"
+    exit 1
+  }
+
+  if [ -n "$TAG" ]; then
+    IFS=','
+    read -r -a tag_array <<<"${TAG}"
+    for tags in "${tag_array[@]}"; do
+      # shellcheck disable=SC2178
+      tag_id=$(sqlite3 "$DATABASE_PATH" "SELECT id FROM tags WHERE tag = '$tags';")
+      # shellcheck disable=SC2128
+      if [ -z "$tag_id" ]; then
+        tag_id=$(sqlite3 "$DATABASE_PATH" "INSERT OR IGNORE INTO tags (tag) VALUES('$tags'); SELECT last_insert_rowid();")
+      fi
+      # shellcheck disable=SC2128
+      sqlite3 "$DATABASE_PATH" "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES('$bookmark_id','${tag_id}');"
+      echo "Added tag $tags to $id"
+    done
+  else
+    sqlite3 "$DATABASE_PATH" "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES('$bookmark_id','${tag_id[0]}');"
+  fi
+
+  if [[ ${#bookmark_conditions[@]} -eq 0 ]]; then
+    echo "No fields to update."
+    exit 1
+  fi
+  bookmark_query+=" $(
+    IFS=,
+    echo "${bookmark_conditions[*]}"
+  )"
+  bookmark_query+=" WHERE $id_field = $id;"
+
+  sqlite3 "$DATABASE_PATH" "$bookmark_query" && _text "$GREEN" "Updated $id to value(s) $URL $TITLE $NOTE"
+  exit 0
+}
+
+function getargs() {
+  local arg=$1
+  local type=$2
+
+  if [ "$type" == "url" ] && [ -z "$URL" ]; then
+    URL=$arg
+    [[ -n "$URL" ]] && URL=$(_escape_string "$URL")
+    [ -z "$URL" ] && return 1
+  elif [ "$type" == "tag" ] && [ -z "$TAG" ]; then
+    TAG=$arg
+    [[ -n "$TAG" ]] && TAG=$(_escape_string "$TAG")
+    [ -z "$TAG" ] && return 1
+  elif [ "$type" == "title" ] && [ -z "$TITLE" ]; then
+    TITLE=$arg
+    [[ -n "$TITLE" ]] && TITLE=$(_escape_string "$TITLE")
+    [ -z "$TITLE" ] && return 1
+  elif [ "$type" == "note" ] && [ -z "$NOTE" ]; then
+    NOTE=$arg
+    [[ -n "$NOTE" ]] && NOTE=$(_escape_string "$NOTE")
+    [ -z "$NOTE" ] && return 1
+  fi
+  return 0
+}
+
+function getargs_flag() {
+  local arg=$1
+  local type=$2
+
+  if [[ -n "$arg" && "$arg" != -* ]]; then
+    getargs "$arg" "$type"
+  else
+    _error "Argument for --$type is missing" >&2
+    exit 1
+  fi
+}
+
+function main() {
+  if [ ! -f "$DATABASE_PATH" ]; then
+    _setup
+    help
+    exit 0
+  fi
+  _list
+}
+
+function parser() {
+  local id id_field
+
+  while getopts ":h-rf" opt; do
+    case "$opt" in
+    f)
+      FORCE=1
+      ;;
+    h)
+      help
+      exit 0
+      ;;
+    r)
+      RAW=1
+      ;;
+    -)
+      break
+      ;;
+    ?)
+      _error "Invalid option '-$OPTARG'" >&2
+      exit 1
+      ;;
+    esac
+  done
+
+  shift $((OPTIND - 1))
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    delete)
+      shift
+      id=$1
+      [[ -z "$id" ]] && {
+        _error "Provide an ID, URL or TAG\n"
+        _text "$BLUE" "Tip: "
+        echo -e "bmark delete 1\n"
+        echo -e "bmark delete https://example.com\n"
+        echo -e "bmark delete mytag"
+        exit 1
+      }
+      if [[ $id =~ ^[0-9]+$ ]]; then
+        IS_ID=1
+      elif [[ $id =~ ^[https://*] ]] || [[ $id =~ ^[http://*] ]]; then
+        IS_URL=1
+      else
+        IS_TAG=1
+      fi
+      _delete "$id"
+      ;;
+    edit)
+      shift
+      id=$1
+      [[ -z "$id" ]] && {
+        _error "Provide an ID\n"
+        _text "$BLUE" "Tip: "
+        echo -e "bmark edit FIELD=VALUE\n"
+        _text "$BLUE" "Field Values: "
+        echo -e "url, tag, title and note\n"
+        _text "$BLUE" "Example: "
+        echo -e "bmark --tag 'example' edit url='https://example.com'"
+        exit 1
+      }
+      id_field=$(awk -F '=' '{print $1}' <<<"$id")
+      case "$id_field" in
+      tag)
+        shift
+        getargs "$1" tag && shift
+        _edit_tags "$id" "$id_field"
+        ;;
+      *)
+        shift
+        getargs "$1" url && shift
+        getargs "$1" tag && shift
+        getargs "$1" title && shift
+        getargs "$1" note && shift
+        _edit_bookmark "$id" "$id_field"
+        ;;
+      esac
+      ;;
+    insert)
+      shift
+      getargs "$1" url && shift
+      [[ -z "$URL" ]] && {
+        _error "Provide an URL\n"
+        _text "$BLUE" "Tip: "
+        echo -e "bmark insert URL TAG TITLE NOTE FIELD=VALUE\n"
+        echo -e "bmark --url URL --tag TAG --title TITLE --note NOTE insert\n"
+        echo -e "bmark --tag TAG insert URL TITLE NOTE"
+        exit 1
+      }
+      getargs "$1" tag && shift
+      getargs "$1" title && shift
+      getargs "$1" note && shift
+      _insert
+      ;;
+    list)
+      shift
+      if [ "$1" == "--help" ]; then
+        _text "$BLUE" "Tip: "
+        echo -e "bmark list URL TAG TITLE NOTE\n"
+        echo -e "bmark --url URL --tag TAG --title TITLE --note NOTE list\n"
+        echo -e "bmark list --tag\n"
+        echo -e "bmark -r list\n"
+        echo -e "bmark -r b. list"
+      fi
+      if [ "$1" == "--tag" ]; then
+        getargs "$1" tag && shift
+        sqlite3 "$DATABASE_PATH" "select tag from tags;"
+        exit 0
+      else
+        getargs "$1" url && shift
+        getargs "$1" tag && shift
+        getargs "$1" title && shift
+        getargs "$1" note && shift
+      fi
+      _list
+      ;;
+    --help)
+      help
+      exit 0
+      ;;
+    --title)
+      shift
+      getargs_flag "$1" title && shift
+      ;;
+    --tag)
+      shift
+      getargs_flag "$1" tag && shift
+      ;;
+    --note)
+      shift
+      getargs_flag "$1" note && shift
+      ;;
+    --url)
+      shift
+      getargs_flag "$1" url && shift
+      ;;
+    *)
+      main
+      ;;
+    esac
+  done
+  exit 0
+}
+
+_check_command sqlite3
+
+if [ -z "$1" ]; then
+  main
+fi
+
+parser "$@"
