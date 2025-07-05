@@ -189,36 +189,37 @@ function _insert() {
 
 function _list() {
   local conditions=()
-  local fields="b.id, b.url, GROUP_CONCAT(t.tag, ',') AS tags, b.title, b.note"
+  local fields="DISTINCT b.id, b.url, GROUP_CONCAT(t.tag, ',') AS tags, b.title, b.note"
+  local groupByClause="GROUP BY b.id"
   if [[ "$RAW" -eq 1 ]]; then
     fields="b.url"
   fi
 
   if [[ -n "$TAG" ]]; then
-    conditions+=("(tag LIKE '%$TAG%')")
+    conditions+=("(t.tag LIKE '%$TAG%')")
   fi
   if [[ -n "$NOTE" ]]; then
-    conditions+=("(note LIKE '%$NOTE%')")
+    conditions+=("(b.note LIKE '%$NOTE%')")
   fi
   if [[ -n "$TITLE" ]]; then
-    conditions+=("(title LIKE '%$TITLE%')")
+    conditions+=("(b.title LIKE '%$TITLE%')")
   fi
   if [[ -n "$URL" ]]; then
-    conditions+=("(url LIKE '%$URL%')")
+    conditions+=("(b.url LIKE '%$URL%')")
   fi
 
   if [[ ${#conditions[@]} -eq 0 ]]; then
     if [[ $(sqlite3 "$DATABASE_PATH" "SELECT COUNT(*) FROM tags;") -ne 0 ]]; then
-      sqlite3 "$DATABASE_PATH" "SELECT DISTINCT $fields FROM bookmarks AS b JOIN bookmark_tags AS bt ON b.id = bt.bookmark_id JOIN tags AS t ON bt.tag_id = t.id;"
+      sqlite3 "$DATABASE_PATH" "SELECT $fields FROM bookmarks AS b LEFT JOIN bookmark_tags AS bt ON b.id = bt.bookmark_id LEFT JOIN tags AS t ON bt.tag_id = t.id $groupByClause;"
     else
       sqlite3 "$DATABASE_PATH" "SELECT bookmarks.id, url, title, note FROM bookmarks;"
     fi
   else
-    local query="SELECT DISTINCT $fields FROM bookmarks AS b JOIN bookmark_tags AS bt ON b.id = bt.bookmark_id JOIN tags AS t ON bt.tag_id = t.id WHERE ${conditions[0]}"
+    local query="SELECT $fields FROM bookmarks AS b LEFT JOIN bookmark_tags AS bt ON b.id = bt.bookmark_id LEFT JOIN tags AS t ON bt.tag_id = t.id WHERE ${conditions[0]}"
     for ((i = 1; i < ${#conditions[@]}; i++)); do
       query+=" AND ${conditions[i]}"
     done
-    query+=";"
+    query+=" $groupByClause;"
     sqlite3 "$DATABASE_PATH" "$query"
   fi
   exit 0
