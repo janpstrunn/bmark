@@ -91,6 +91,23 @@ function _confirmation() {
   fi
 }
 
+function _importer() {
+  local command=$1
+  local html_file=$2
+
+  _check_command bmark-importer
+  if [[ -f "$html_file" ]]; then
+    html_file=$(readlink -f "$html_file")
+    if [ "$command" == "import" ]; then
+      bmark-importer import "$html_file"
+    elif [ "$command" == "export" ]; then
+      bmark-importer export "$html_file"
+    fi
+  else
+    _error "No HTML file found!"
+  fi
+}
+
 function _setup() {
   echo "Bookmark database not found. Creating a new one..."
   mkdir -p "$DATABASE_DIR"
@@ -345,7 +362,7 @@ function main() {
 }
 
 function parser() {
-  local id id_field
+  local id id_field html_file
 
   while getopts ":h-rf" opt; do
     case "$opt" in
@@ -438,6 +455,16 @@ function parser() {
       getargs "$1" title && shift
       getargs "$1" note && shift
       _insert
+      ;;
+    import)
+      shift
+      html_file=$1
+      _importer import "$html_file"
+      ;;
+    export)
+      shift
+      html_file=$1
+      _importer export "$html_file"
       ;;
     list)
       shift
