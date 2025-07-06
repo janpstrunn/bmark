@@ -4,7 +4,7 @@ A simple bookmark manager that aims to be simple, while not keeping in your way 
 
 `bmark` is inspired by similar tools like [buku](https://github.com/jarun/buku) and [bmm](https://github.com/dhth/bmm). It also uses SQLite as the backend.
 
-This tool was created, because I feel both `buku`` and `bmm`offer unnecessary features. So I made`bmark` with the bare minimum features you would expect a bookmark manager to have.
+This tool was created, because I feel both `buku` and `bmm` offer unnecessary features. So I made `bmark` with the bare minimum features you would expect a bookmark manager to have.
 
 ## Features
 
