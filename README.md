@@ -42,7 +42,9 @@ Usage:
 Commands:
   delete ID or URL                        Delete a bookmark
   edit FIELD=VALUE URL TAG TITLE NOTES    Edit a bookmark
+  export                                  Export bookmarks to HTML file
   help                                    Displays this message and exits
+  import                                  Import bookmarks from HTML file
   insert URL TAG TITLE NOTES              Insert a new bookmark
   list URL TAG TITLE NOTES                List all bookmarks
 
