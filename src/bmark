@@ -27,7 +27,8 @@ $(_text "$BLUE" "Flags:")
   -h                            Displays this message and exits
   --help                        Displays this message and exits
   --note <NOTE>                 Query for NOTE
-  -r                            List queries will output only the URL
+  -r                            List only the URL
+  -s                            List will match given query
   --tag <TAG>                   Query for TAG
   --title <TITLE>               Query for TITLE
   --url <URL>                   Query for URL
@@ -234,7 +235,11 @@ function _list() {
   else
     local query="SELECT $fields FROM bookmarks AS b LEFT JOIN bookmark_tags AS bt ON b.id = bt.bookmark_id LEFT JOIN tags AS t ON bt.tag_id = t.id WHERE ${conditions[0]}"
     for ((i = 1; i < ${#conditions[@]}; i++)); do
-      query+=" AND ${conditions[i]}"
+      if [[ "$STRICT" -eq 1 ]]; then
+        query+=" AND ${conditions[i]}"
+      else
+        query+=" OR ${conditions[i]}"
+      fi
     done
     query+=" $groupByClause;"
     sqlite3 "$DATABASE_PATH" "$query"
@@ -364,7 +369,7 @@ function main() {
 function parser() {
   local id id_field html_file
 
-  while getopts ":h-rf" opt; do
+  while getopts ":h-rfs" opt; do
     case "$opt" in
     f)
       FORCE=1
@@ -375,6 +380,9 @@ function parser() {
       ;;
     r)
       RAW=1
+      ;;
+    s)
+      STRICT=1
       ;;
     -)
       break
