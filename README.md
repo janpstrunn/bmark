@@ -16,7 +16,7 @@ This tool was created, because I feel both `buku` and `bmm` offer unnecessary fe
 - List bookmarks with queries
 - List only URL
 
-This tool follows the UNIX philosophy. Extra functionalities like opening in the browser or fzf/rofi features.
+This tool follows the UNIX philosophy. Extra functionalities like opening in the browser or piping to `fzf` and `rofi` may be done by the user.
 
 ## Requirements
 
